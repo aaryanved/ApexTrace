@@ -11,8 +11,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
-      # Vercel production and preview URLs of the frontend project
+      # Frontend origins: custom domain plus Vercel production and preview URLs
       - key: CORS_ORIGIN_REGEX
-        value: https://apextrace[a-z0-9-]*\.vercel\.app
+        value: https://(apex\.bhalla\.info|apextrace[a-z0-9-]*\.vercel\.app)
       - key: EVAL_WORKERS
         value: "1"
