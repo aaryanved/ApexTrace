@@ -1,0 +1,18 @@
+# Render blueprint for the FastAPI backend (the frontend is on Vercel).
+# Built from the repo root: the backend reads config/ and scenarios/ from here.
+services:
+  - type: web
+    name: apextrace-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      # Vercel production and preview URLs of the frontend project
+      - key: CORS_ORIGIN_REGEX
+        value: https://apextrace[a-z0-9-]*\.vercel\.app
+      - key: EVAL_WORKERS
+        value: "1"

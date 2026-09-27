@@ -1,5 +1,6 @@
 import asyncio
 import multiprocessing
+import os
 import threading
 from contextlib import asynccontextmanager
 
@@ -62,10 +63,14 @@ LOCAL_ORIGIN_REGEX = (
     r"http://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+"
     r"|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?"
 )
+# Hosted deploy: the frontend's origin(s), e.g. the Vercel URLs.
+EXTRA_ORIGIN_REGEX = os.environ.get("CORS_ORIGIN_REGEX")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=LOCAL_ORIGIN_REGEX,
+    allow_origin_regex=(
+        f"(?:{LOCAL_ORIGIN_REGEX})|(?:{EXTRA_ORIGIN_REGEX})" if EXTRA_ORIGIN_REGEX else LOCAL_ORIGIN_REGEX
+    ),
     allow_methods=["*"],
     allow_headers=["*"],
 )

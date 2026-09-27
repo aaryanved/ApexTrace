@@ -316,8 +316,9 @@ def _evaluate_all(kind: str, parallel: bool) -> dict[str, Any]:
     if parallel:
         try:
             # leave two cores free and run at low priority, so a live driving
-            # session (and the browser) stay smooth while the suite runs
-            workers = max(1, (os.cpu_count() or 4) - 2)
+            # session (and the browser) stay smooth while the suite runs.
+            # EVAL_WORKERS caps it on small hosted instances (Render).
+            workers = int(os.environ.get("EVAL_WORKERS") or max(1, (os.cpu_count() or 4) - 2))
             with ProcessPoolExecutor(max_workers=workers, initializer=_low_priority) as pool:
                 raw = list(pool.map(_eval_config, jobs))
         except Exception:
