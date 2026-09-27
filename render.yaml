@@ -5,7 +5,10 @@ services:
     name: apextrace-api
     runtime: python
     plan: free
-    buildCommand: pip install -r backend/requirements.txt
+    # Warm the result cache at build time (all build CPUs, ~5 min) so it ships
+    # with the deploy; otherwise every boot recomputes it on the instance's
+    # tiny CPU share for many minutes and live driving stutters.
+    buildCommand: pip install -r backend/requirements.txt && cd backend && EVAL_WORKERS= python scripts/warm_cache.py
     startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:

@@ -167,7 +167,15 @@ export function createHardwareAdapter(onAvailabilityChange?: () => void): InputA
 
   function connect() {
     if (disposed) return
-    const ws = new WebSocket(bridgeUrl())
+    let ws: WebSocket
+    try {
+      ws = new WebSocket(bridgeUrl())
+    } catch {
+      // An HTTPS page (the hosted build) may not open the bridge's ws:// URL;
+      // the constructor throws instead of failing the socket. No wheel there,
+      // and retrying would throw again, so stay unavailable.
+      return
+    }
     socket = ws
 
     ws.onopen = () => {

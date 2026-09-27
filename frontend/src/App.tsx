@@ -3,6 +3,7 @@ import { ActiveSessionProvider } from './app/ActiveSessionContext'
 import { DemoProvider } from './app/DemoContext'
 import { ErrorProvider } from './app/ErrorContext'
 import { GarageProvider } from './app/GarageContext'
+import { ScreenBoundary } from './app/ScreenBoundary'
 import { ScreenProvider, useScreen } from './app/ScreenContext'
 import { ScreenNav } from './app/ScreenNav'
 import { ConnectionStatus } from './components/ConnectionStatus'
@@ -30,6 +31,15 @@ function CurrentScreen() {
   }
 }
 
+function BoundedScreen() {
+  const { screen } = useScreen()
+  return (
+    <ScreenBoundary key={screen}>
+      <CurrentScreen />
+    </ScreenBoundary>
+  )
+}
+
 function AppShell() {
   return (
     <div id="app-root">
@@ -38,7 +48,7 @@ function AppShell() {
       <div id="connection-status-slot">
         <ConnectionStatus />
       </div>
-      <CurrentScreen />
+      <BoundedScreen />
       <DemoController />
     </div>
   )
