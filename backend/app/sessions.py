@@ -115,8 +115,17 @@ async def broadcast(session: Session, messages: list[dict[str, Any]]) -> None:
 
 async def run_session_loop(session: Session) -> None:
     last_heartbeat = 0.0
+    # Sleep to the next deadline, not a fixed TICK_DT after the work: otherwise
+    # tick + broadcast time adds to every period and on a slow host (the free
+    # Render instance) the stream drops well below 20 Hz.
+    deadline = time.monotonic()
     while session.clients:
-        await asyncio.sleep(TICK_DT)
+        deadline += TICK_DT
+        delay = deadline - time.monotonic()
+        if delay < -TICK_DT:  # fell far behind (stall): resync instead of bursting
+            deadline = time.monotonic()
+            delay = 0
+        await asyncio.sleep(max(0.0, delay))
         now = time.monotonic()
         session.touch(now)
         messages = session.tick(now)
