@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { createSession } from '../api/session'
-import { useActiveSession } from '../app/ActiveSessionContext'
-import { useErrorContext } from '../app/ErrorContext'
-import { useGarage } from '../app/GarageContext'
 import type { ButtonCounts, NormalizedControls } from '../input/useInputAdapter'
-import { useSessionStream } from '../stream/useSessionStream'
-import { DEFAULT_CAR_SETUP, type CarSetupConfig, type ErsMode, type TrackId } from '../types/schemas'
+import { TICK_DT, type ControlInput, type SimMessage } from '../sim/session'
+import { TRACKS } from '../sim/tracks'
+import type { FromWorker, ToWorker } from '../sim/worker'
+import { applyWarningEvent, INITIAL_WARNING, type WarningState } from '../stream/warningState'
+import { DEFAULT_CAR_SETUP, type CarSetupConfig, type ErsMode, type TrackId, type VehicleStateMessage } from '../types/schemas'
 
-export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed'
+export type ConnectionState = 'idle' | 'connected'
 
-const SEND_INTERVAL_MS = 50 // 20Hz, matches the backend tick rate
+const CONTROL_INTERVAL_MS = TICK_DT * 1000 // also sent on every change; this catches button presses
 const SETUP_KEY = 'limitlab.carSetup'
 const ERS_ORDER: ErsMode[] = ['harvest', 'balanced', 'overtake']
+const MAX_TRAIL_POINTS = 2000
+
+type Point = [number, number]
 
 function loadSetup(): CarSetupConfig {
   try {
@@ -22,72 +24,121 @@ function loadSetup(): CarSetupConfig {
   }
 }
 
-// Creates/attaches the driver's session and streams controls up. All state
-// (position, faults, warnings, lap progress) is server-authoritative — this
-// hook never computes physics locally.
+// Runs the driver's session in the browser. The simulator (src/sim) steps at
+// 20 Hz in a Web Worker, so a slow frame can't slow the car; this hook sends
+// it the controls and folds what each tick produced into React state.
+
+interface ActiveSession {
+  id: string
+  track: TrackId
+  worker: Worker
+}
+
+const newSessionId = () => Math.random().toString(16).slice(2, 10)
 export function useDriveSession(
   normalizedControls: NormalizedControls,
   buttonCounts?: React.MutableRefObject<ButtonCounts>,
   ersPresses = 0,
   resetPresses = 0,
 ) {
-  const { reportError } = useErrorContext()
-  const { driverSession, setDriverSession } = useActiveSession()
-  const { selection } = useGarage()
-  const [selectedTrack, setSelectedTrack] = useState<TrackId>(driverSession?.track ?? 'monza')
-  const [creating, setCreating] = useState(false)
+  const [selectedTrack, setSelectedTrack] = useState<TrackId>('monza')
+  const [session, setSession] = useState<ActiveSession | null>(null)
   const [running, setRunning] = useState(true)
   const [setup, setSetupState] = useState<CarSetupConfig>(loadSetup)
+  const [vehicleState, setVehicleState] = useState<VehicleStateMessage | null>(null)
+  const [warning, setWarning] = useState<WarningState>(INITIAL_WARNING)
+  const [trail, setTrail] = useState<Point[]>([])
+  const [previousLapTrail, setPreviousLapTrail] = useState<Point[]>([])
 
-  const stream = useSessionStream('driver', driverSession?.id ?? null)
-  const { send } = stream
-
-  const seqRef = useRef(0)
   const controlsRef = useRef(normalizedControls)
   controlsRef.current = normalizedControls
 
-  const connectionState: ConnectionState = creating ? 'connecting' : stream.connection
+  const start = useCallback(() => {
+    if (session) return
+    const worker = new Worker(new URL('../sim/worker.ts', import.meta.url), { type: 'module' })
+    worker.postMessage({ type: 'start', track: selectedTrack, setup } satisfies ToWorker)
+    setRunning(true)
+    setSession({ id: newSessionId(), track: selectedTrack, worker })
+  }, [session, selectedTrack, setup])
 
-  const start = useCallback(async () => {
-    if (creating || (driverSession && stream.connection !== 'closed')) return
-    setCreating(true)
-    try {
-      const created = await createSession(selectedTrack, 'driver', undefined, selection, setup)
-      seqRef.current = 0
-      setRunning(true)
-      setDriverSession({
-        id: created.session_id,
-        track: selectedTrack,
-        seed: created.seed,
-        profile: created.track_profile,
-      })
-    } catch (err) {
-      reportError(err instanceof Error ? err.message : 'Failed to start session')
-    } finally {
-      setCreating(false)
+  const post = useCallback((command: ToWorker) => session?.worker.postMessage(command), [session])
+
+  const endSession = useCallback(() => setSession(null), [])
+
+  // What each tick produced -> React state.
+  useEffect(() => {
+    setVehicleState(null)
+    setWarning(INITIAL_WARNING)
+    setTrail([])
+    setPreviousLapTrail([])
+    if (!session) return
+
+    let trailPoints: Point[] = []
+    let runId: string | null = null
+    const apply = (message: SimMessage) => {
+      switch (message.type) {
+        case 'vehicle_state': {
+          setVehicleState(message)
+          trailPoints = [...trailPoints, [message.x, message.y] as Point].slice(-MAX_TRAIL_POINTS)
+          setTrail(trailPoints)
+          break
+        }
+        case 'warning_event':
+          setWarning((prev) => applyWarningEvent(prev, message, Date.now()))
+          break
+        case 'session_info':
+          // a reset starts a new run: keep the old line as the previous lap
+          if (runId !== null && runId !== message.run_id && trailPoints.length > 1) setPreviousLapTrail(trailPoints)
+          if (runId !== message.run_id) trailPoints = []
+          runId = message.run_id
+          break
+        case 'run_event':
+          break
+      }
     }
-  }, [creating, driverSession, stream.connection, selectedTrack, selection, setup, setDriverSession, reportError])
+    session.worker.onmessage = (event: MessageEvent<FromWorker>) => event.data.messages.forEach(apply)
+    return () => session.worker.terminate()
+  }, [session])
 
-  // Setup changes apply live: saved locally and sent to the running session.
+  // Controls: on every change, and on a steady beat for the button counters.
+  const sendControls = useCallback(() => {
+    const c = controlsRef.current
+    const b = buttonCounts?.current
+    const input: ControlInput = {
+      steering: c.steering,
+      throttle: c.throttle,
+      brake: c.brake,
+      shift_up_count: b?.shiftUp ?? 0,
+      shift_down_count: b?.shiftDown ?? 0,
+      drs_toggle_count: b?.drs ?? 0,
+      reverse_toggle_count: b?.reverse ?? 0,
+    }
+    post({ type: 'controls', input })
+  }, [post, buttonCounts])
+  useEffect(() => {
+    sendControls()
+  }, [normalizedControls, sendControls])
+  useEffect(() => {
+    if (!session) return
+    const id = setInterval(sendControls, CONTROL_INTERVAL_MS)
+    return () => clearInterval(id)
+  }, [session, sendControls])
+
+  // Setup changes apply live, and are remembered on this device.
+  const setupRef = useRef(setup)
+  setupRef.current = setup
   const setSetup = useCallback(
     (next: CarSetupConfig) => {
       setSetupState(next)
+      post({ type: 'setup', setup: next })
       try {
         localStorage.setItem(SETUP_KEY, JSON.stringify(next))
       } catch {
         /* storage unavailable: setting still applies to this session */
       }
-      send({ type: 'car_setup', setup: next })
     },
-    [send],
+    [post],
   )
-
-  // Re-send the setup whenever the stream (re)connects, so the server always has it.
-  const setupRef = useRef(setup)
-  setupRef.current = setup
-  useEffect(() => {
-    if (stream.connection === 'connected') send({ type: 'car_setup', setup: setupRef.current })
-  }, [stream.connection, send])
 
   // Battery-mode button cycles Harvest -> Balanced -> Overtake.
   const ersSeen = useRef(ersPresses)
@@ -99,29 +150,19 @@ export function useDriveSession(
     setSetup({ ...current, ers_mode: next })
   }, [ersPresses, setSetup])
 
-  const endSession = useCallback(() => setDriverSession(null), [setDriverSession])
-
-  // The server no longer knows this session (e.g. the backend restarted):
-  // drop it so Start works straight away, and say what happened.
-  useEffect(() => {
-    if (stream.connection === 'closed' && driverSession) {
-      setDriverSession(null)
-      reportError('Session lost — the backend restarted. Press Start for a new run.')
-    }
-  }, [stream.connection, driverSession, setDriverSession, reportError])
-
   const togglePause = useCallback(() => {
-    const next = !running
-    if (send({ type: next ? 'resume' : 'pause' })) setRunning(next)
-  }, [running, send])
+    if (!session) return
+    post({ type: running ? 'pause' : 'resume' })
+    setRunning(!running)
+  }, [session, post, running])
 
   const reset = useCallback(() => {
-    if (send({ type: 'reset' })) setRunning(true)
-  }, [send])
+    if (!session) return
+    post({ type: 'reset' })
+    setRunning(true)
+  }, [session, post])
 
-  // The ESP32 wheel's joystick press does what "Reset to grid" does. Handled
-  // here like the battery button: a new press count, not the `reset` identity,
-  // is what triggers it.
+  // The ESP32 wheel's joystick press does what "Reset to grid" does.
   const resetSeen = useRef(resetPresses)
   useEffect(() => {
     if (resetPresses === resetSeen.current) return
@@ -129,43 +170,18 @@ export function useDriveSession(
     reset()
   }, [resetPresses, reset])
 
-  useEffect(() => {
-    if (stream.connection !== 'connected' || !driverSession) return
-    const interval = setInterval(() => {
-      seqRef.current += 1
-      send({
-        type: 'control_input',
-        seq: seqRef.current,
-        session_id: driverSession.id,
-        track: driverSession.track,
-        seed: driverSession.seed,
-        t_client: Date.now(),
-        steering: controlsRef.current.steering,
-        throttle: controlsRef.current.throttle,
-        brake: controlsRef.current.brake,
-        shift_up_count: buttonCounts?.current.shiftUp ?? 0,
-        shift_down_count: buttonCounts?.current.shiftDown ?? 0,
-        drs_toggle_count: buttonCounts?.current.drs ?? 0,
-        reverse_toggle_count: buttonCounts?.current.reverse ?? 0,
-      })
-    }, SEND_INTERVAL_MS)
-    return () => clearInterval(interval)
-  }, [stream.connection, driverSession, send, buttonCounts])
-
   return {
     setup,
     setSetup,
     selectedTrack,
     selectTrack: setSelectedTrack,
-    connectionState,
-    sessionId: driverSession?.id ?? null,
-    trackProfile: driverSession?.profile ?? null,
-    vehicleState: stream.vehicleState,
-    warning: stream.warning,
-    faultState: stream.faultState,
-    sessionInfo: stream.sessionInfo,
-    trail: stream.trail,
-    previousLapTrail: stream.previousLapTrail,
+    connectionState: (session ? 'connected' : 'idle') as ConnectionState,
+    sessionId: session?.id ?? null,
+    trackProfile: session ? TRACKS[session.track] : null,
+    vehicleState,
+    warning,
+    trail,
+    previousLapTrail,
     running,
     start,
     endSession,

@@ -19,8 +19,7 @@ export interface HardwareInputMessage {
 
 export const BRIDGE_PORT = 8765
 
-// Same host the page was served from, so the engineer's second device doesn't
-// look for the bridge on its own localhost (mirrors api/config.ts). Set
+// The bridge runs on the machine serving the page (the wheel's USB host). Set
 // VITE_HARDWARE_WS_URL when the ESP32 is plugged into a different machine.
 // Resolved lazily: read at module load this would make the module unimportable
 // outside a browser.

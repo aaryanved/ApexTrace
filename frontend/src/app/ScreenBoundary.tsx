@@ -1,7 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 
-// A crash inside one screen must not blank the whole app (nav included).
-// Keyed by screen in App.tsx, so switching screens starts a fresh boundary.
+// A crash inside the screen shows an error and a reload button instead of a blank page.
 export class ScreenBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null }
   static getDerivedStateFromError(error: Error) {
