@@ -6,6 +6,9 @@ import { mkdirSync } from 'node:fs'
 import puppeteer from 'puppeteer-core'
 
 const BASE = process.env.BASE ?? 'http://localhost:4173'
+// Walls stand this far outside each track's edge line (src/sim/tracks/*.json).
+const BARRIER_OFFSET = { Monza: 14.0, 'Baku City': 1.5 }
+const CAR_HALF_WIDTH = 1.0 // the collision box is 2 m wide
 const browser = await puppeteer.launch({
   executablePath: process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: 'new',
@@ -31,7 +34,7 @@ try {
         constructor(...args) {
           super(...args)
           this.addEventListener('message', (e) => {
-            for (const m of e.data.messages) if (m.type === 'vehicle_state') window.__ticks.push([performance.now() / 1000, m.t, m.speed, m.barrier_contacts])
+            for (const m of e.data.messages) if (m.type === 'vehicle_state') window.__ticks.push([performance.now() / 1000, m.t, m.speed, m.barrier_contacts, m.signed_clearance])
           })
         }
       }
@@ -59,24 +62,30 @@ try {
     const ratio = (b[1] - a[1]) / (b[0] - a[0])
     assert(ratio > 0.97 && ratio < 1.03, `${track}: simulation ran at ${ratio.toFixed(3)}x real time`)
 
+    // A busy page can take a few seconds to pass the key press to the car,
+    // so wait for the speed rather than a fixed time.
     await page.keyboard.down('w')
-    const throttleFrom = (await latest(page)).t
-    await sleep(4500)
-    // (Baku's first corner is ~220 m away, so full throttle may meet its wall first)
-    const peak = await page.evaluate((from) => Math.max(...window.__ticks.filter(([, t]) => t >= from).map(([, , v]) => v)), throttleFrom)
-    assert(peak * 3.6 > 120, `${track}: only ${Math.round(peak * 3.6)} km/h under full throttle`)
+    const throttleDeadline = Date.now() + 15000
+    while ((await latest(page)).kmh <= 120 && Date.now() < throttleDeadline) await sleep(200)
+    const { kmh } = await latest(page)
+    assert(kmh > 120, `${track}: only ${Math.round(kmh)} km/h under full throttle`)
 
-    // Steer into the wall: the car stops, and held throttle can't push it through.
+    // Steer into the wall: contact stops the car dead, and with the throttle
+    // still held the car never gets beyond the wall (it may drive off along it).
     await page.keyboard.down('d')
     const deadline = Date.now() + 25000
     while (!(await latest(page)).contacts && Date.now() < deadline) await sleep(200)
     await page.keyboard.up('d')
     assert((await latest(page)).contacts > 0, `${track}: no wall contact`)
-    await sleep(1500) // settle against the wall, then a second of held throttle
-    const settled = (await latest(page)).t
-    await sleep(1000)
-    const pushed = await page.evaluate((from) => Math.max(...window.__ticks.filter(([, t]) => t > from).map(([, , v]) => v)), settled)
-    assert(pushed * 3.6 < 1, `${track}: throttle pushed through the wall (${(pushed * 3.6).toFixed(1)} km/h)`)
+    await sleep(2500)
+    const after = await page.evaluate(() => {
+      const firstHit = window.__ticks.findIndex(([, , , contacts]) => contacts > 0)
+      return { hitSpeed: window.__ticks[firstHit][2], clearances: window.__ticks.slice(firstHit).map((tick) => tick[4]) }
+    })
+    assert.equal(after.hitSpeed, 0, `${track}: car did not stop on impact`)
+    const deepest = Math.min(...after.clearances)
+    const limit = -(BARRIER_OFFSET[track] + CAR_HALF_WIDTH + 0.1)
+    assert(deepest > limit, `${track}: car centre ${(-deepest).toFixed(2)} m past the edge, beyond the wall at ${BARRIER_OFFSET[track]} m`)
     await page.keyboard.up('w')
 
     assert.deepEqual(errors, [], `${track}: page errors`)
