@@ -1,16 +1,11 @@
 import { Canvas } from '@react-three/fiber'
 import { PerformanceMonitor } from '@react-three/drei'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { getTrack } from '../api/session'
-import { useDemo } from '../app/DemoContext'
 import { CalibrationPanel } from '../components/CalibrationPanel'
-import { SimulatedFaultLabel } from '../components/SimulatedFaultLabel'
 import { Icon } from '../components/Icon'
-import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import { BrakeWarning } from '../drive/BrakeWarning'
 import { CarSetupPanel } from '../drive/CarSetupPanel'
 import { DriveHud } from '../drive/DriveHud'
-import { FaultHeadsUp } from '../drive/FaultHeadsUp'
 import { RunStateBanner } from '../drive/RunStateBanner'
 import { TelemetryPanel } from '../drive/TelemetryPanel'
 import { TrackPicker } from '../drive/TrackPicker'
@@ -25,15 +20,8 @@ import { GhostRecorder } from '../drive/ghostLap'
 import { setGraphicsMode, useGraphicsMode } from '../app/graphics'
 import { useEngineSound } from '../audio/useEngineSound'
 import { Scene, type SceneView } from '../scene/Scene'
-import { UPGRADE_IDS, type TrackId, type TrackProfile, type UpgradeConfig } from '../types/schemas'
-import { useGarage } from '../app/GarageContext'
+import { TRACKS } from '../sim/tracks'
 import './DriveScreen.css'
-
-function carLabel(upgrades: UpgradeConfig): string {
-  const names = { brake_servicing: 'serviced brakes', comms_improvement: 'improved comms', local_fallback: 'local fallback' }
-  const on = UPGRADE_IDS.filter((id) => upgrades[id]).map((id) => names[id])
-  return on.length ? on.join(' + ') : 'none'
-}
 
 // The view button cycles cockpit -> chase -> overview -> cockpit; its label names the next view.
 const NEXT_VIEW: Record<SceneView, SceneView> = { cockpit: 'follow', follow: 'overview', overview: 'cockpit' }
@@ -46,16 +34,13 @@ const VIEW_BUTTON_LABEL: Record<SceneView, string> = {
 export function DriveScreen() {
   const input = useInputAdapter()
   const session = useDriveSession(input.normalized, input.buttonCounts, input.presses.ersCycle, input.presses.reset)
-  const demo = useDemo()
   // Retina screens: start at 1.5x, drop to 1x if the frame rate can't keep up.
   // The Performance graphics setting pins 1x with no effects instead: a GPU
   // that strains but holds its frame rate never trips that automatic drop.
   const [dpr, setDpr] = useState(1.5)
   const lowGraphics = useGraphicsMode() === 'performance'
-  const { selection } = useGarage()
-  const { start, connectionState } = session
+  const { connectionState } = session
 
-  const [profiles, setProfiles] = useState<Partial<Record<TrackId, TrackProfile>>>({})
   const [viewOverride, setViewOverride] = useState<SceneView | null>(null)
   const [showControls, setShowControls] = useState(false)
   const [showRacingLine, setShowRacingLine] = useState(true)
@@ -65,37 +50,17 @@ export function DriveScreen() {
   const steeringRef = useRef(0)
   steeringRef.current = input.normalized.steering
 
-  useEffect(() => {
-    let cancelled = false
-    for (const id of ['monza', 'baku'] as TrackId[]) {
-      getTrack(id)
-        .then((p) => !cancelled && setProfiles((prev) => ({ ...prev, [id]: p })))
-        .catch(() => undefined)
-    }
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const profile = session.trackProfile ?? profiles[session.selectedTrack] ?? null
+  const profile = session.trackProfile ?? TRACKS[session.selectedTrack]
   const inSession = session.sessionId !== null
   const view: SceneView = viewOverride ?? (inSession ? 'cockpit' : 'overview')
 
-  useEffect(() => {
-    if (demo.active && demo.step.id === 'drive' && connectionState === 'idle') void start()
-  }, [demo.active, demo.step.id, connectionState, start])
-
-  const info = session.sessionInfo
-  // only while someone is watching; "disconnected" was just noise on screen
-  const engineer: { label: string; tone: StatusTone } | null = info?.engineer_connected ? { label: 'Engineer connected', tone: 'success' } : null
   const v = session.vehicleState
 
   // Tell the ESP32 wheel's screen what the game is doing: its connection
   // banner, BRAKE light and speed. `input.source` is a dependency so the
   // "is this wheel the one driving?" flag is re-sent whenever the input in use
   // changes (e.g. a gamepad is plugged in).
-  const gameSession: GameState['session'] =
-    connectionState === 'idle' || connectionState === 'closed' ? 'none' : connectionState
+  const gameSession: GameState['session'] = connectionState === 'idle' ? 'none' : 'connected'
   const gameWarning: GameState['warning'] = session.warning.active
     ? 'brake'
     : session.warning.stale
@@ -160,12 +125,10 @@ export function DriveScreen() {
 
       {!inSession && (
         <TrackPicker
-          profiles={profiles}
+          profiles={TRACKS}
           value={session.selectedTrack}
           onChange={session.selectTrack}
           onStart={session.start}
-          starting={connectionState === 'connecting'}
-          carLabel={carLabel(selection)}
           onOpenSetup={() => setShowSetup(true)}
         />
       )}
@@ -174,26 +137,8 @@ export function DriveScreen() {
         <>
           <div className="drive-screen__brand">
             <strong>{profile?.name}</strong>
-            <span>
-              Engineer code <code>{session.sessionId}</code>
-            </span>
           </div>
 
-          <div className="drive-screen__chips">
-            {connectionState === 'reconnecting' && <StatusBadge label="Reconnecting…" tone="warning" />}
-            {engineer && <StatusBadge label={engineer.label} tone={engineer.tone} />}
-            <SimulatedFaultLabel delayMs={v?.injected_delay_ms ?? 0} />
-            {v?.local_fallback_active && <StatusBadge tone="info" label="Local warning fallback active" />}
-            {info && (
-              <StatusBadge
-                tone={info.scenario_name ? 'warning' : 'neutral'}
-                label={info.scenario_name ? `Scenario armed: ${info.scenario_name}` : 'No scenario armed'}
-              />
-            )}
-            {info && <StatusBadge tone="neutral" label={`Upgrades: ${carLabel(info.upgrades)}`} />}
-            {/* stacked under the badges (not floating over them) */}
-            <FaultHeadsUp faults={session.faultState?.faults ?? []} profile={profile} distanceAlongLap={v?.distance_along_lap ?? 0} />
-          </div>
           <BrakeWarning warning={session.warning} />
           <ReactionToast latest={report.responses.at(-1)} />
           <RunStateBanner vehicleState={v} />

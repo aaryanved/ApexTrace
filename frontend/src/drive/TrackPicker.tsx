@@ -26,16 +26,14 @@ function Outline({ profile }: { profile: TrackProfile }) {
 }
 
 interface TrackPickerProps {
-  profiles: Partial<Record<TrackId, TrackProfile>>
+  profiles: Record<TrackId, TrackProfile>
   value: TrackId
   onChange: (id: TrackId) => void
   onStart: () => void
   onOpenSetup?: () => void
-  starting: boolean
-  carLabel: string
 }
 
-export function TrackPicker({ profiles, value, onChange, onStart, onOpenSetup, starting, carLabel }: TrackPickerProps) {
+export function TrackPicker({ profiles, value, onChange, onStart, onOpenSetup }: TrackPickerProps) {
   return (
     <div className="track-picker" role="dialog" aria-label="Choose a circuit">
       <h1>Choose your circuit</h1>
@@ -50,25 +48,24 @@ export function TrackPicker({ profiles, value, onChange, onStart, onOpenSetup, s
               onClick={() => onChange(id)}
               aria-pressed={value === id}
             >
-              <div className="track-picker__map">{p && <Outline profile={p} />}</div>
-              <strong>{p?.name ?? id}</strong>
-              <span>
-                {p ? `${(p.total_length / 1000).toFixed(3)} km · ${p.hazard_zones.length} corners` : '…'}
-              </span>
+              <div className="track-picker__map">
+                <Outline profile={p} />
+              </div>
+              <strong>{p.name}</strong>
+              <span>{`${(p.total_length / 1000).toFixed(3)} km · ${p.hazard_zones.length} corners`}</span>
               <small>{BLURB[id]}</small>
             </button>
           )
         })}
       </div>
       <div className="track-picker__footer">
-        <span>Car: {carLabel}</span>
         {onOpenSetup && (
           <button type="button" className="track-picker__setup" onClick={onOpenSetup}>
             Car setup
           </button>
         )}
-        <button type="button" className="track-picker__go" onClick={onStart} disabled={starting}>
-          {starting ? 'Starting…' : 'Start session'}
+        <button type="button" className="track-picker__go" onClick={onStart}>
+          Start session
         </button>
       </div>
       <p className="track-picker__keys">

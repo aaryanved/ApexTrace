@@ -4,9 +4,3 @@
   position: relative;
 }
 
-#connection-status-slot {
-  position: fixed;
-  top: var(--space-md);
-  left: var(--space-md);
-  z-index: 10;
-}

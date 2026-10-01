@@ -1,11 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
-import { getLeaderboard, submitScore, type LeaderboardResponse } from '../api/leaderboard'
+import { useMemo } from 'react'
 import { formatLapTime } from '../scene/trackGeometry'
 import type { TrackId } from '../types/schemas'
 import { ASSUMED_REACTION_S, reportCsv, summarise, type DriverReport } from './driverReport'
 import './SessionReport.css'
-
-const NAME_KEY = 'limitlab.driverName'
 
 const lap = formatLapTime
 
@@ -63,61 +60,7 @@ interface Props {
 
 export function SessionReport({ report, track, trackName, onClose, onEnd }: Props) {
   const s = useMemo(() => summarise(report), [report])
-  const [name, setName] = useState(() => {
-    try {
-      return localStorage.getItem(NAME_KEY) ?? ''
-    } catch {
-      return ''
-    }
-  })
-  const [board, setBoard] = useState<LeaderboardResponse | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let live = true
-    getLeaderboard(track)
-      .then((b) => live && setBoard(b))
-      .catch(() => live && setError('Leaderboard unavailable (is the backend running?)'))
-    return () => {
-      live = false
-    }
-  }, [track])
-
-  const save = async () => {
-    const trimmed = name.trim()
-    if (!trimmed || saving || s.score === null) return
-    setSaving(true)
-    setError(null)
-    try {
-      localStorage.setItem(NAME_KEY, trimmed)
-    } catch {
-      /* not remembered: fine */
-    }
-    try {
-      setBoard(
-        await submitScore({
-          name: trimmed,
-          track,
-          score: s.score,  // non-null: checked above
-          best_lap_s: report.bestLapS,
-          reaction_avg_s: s.reactionAvgS === null ? null : Math.round(s.reactionAvgS * 1000) / 1000,
-          warnings: s.warnings,
-          heeded: s.heeded,
-          barrier_hits: report.barrierHits,
-        }),
-      )
-      setSaved(true)
-    } catch {
-      setError('Could not save the score. Try again.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
   const minutes = Math.max(0, (Date.now() - report.startedAt) / 60000)
-  const mine = saved && board?.rank ? board.entries[board.rank - 1]?.id : undefined
 
   return (
     <div className="session-report__backdrop" role="dialog" aria-modal="true" aria-label="Session report">
@@ -168,46 +111,6 @@ export function SessionReport({ report, track, trackName, onClose, onEnd }: Prop
           <ReactionChart report={report} />
         </section>
 
-        <section className="session-report__board">
-          <h3>
-            Leaderboard · {trackName}
-            {board?.reaction_avg_s != null && (
-              <span className="session-report__legend">all drivers so far: {board.reaction_avg_s.toFixed(2)} s avg reaction ({board.total})</span>
-            )}
-          </h3>
-          {!saved && s.score === null && (
-            <p className="session-report__empty">Scores are posted once you have met a BRAKE warning: take a corner at speed.</p>
-          )}
-          {!saved && s.score !== null && (
-            <form
-              className="session-report__save"
-              onSubmit={(e) => {
-                e.preventDefault()
-                void save()
-              }}
-            >
-              <input value={name} onChange={(e) => setName(e.target.value)} maxLength={24} placeholder="Your name" aria-label="Your name" />
-              <button type="submit" disabled={!name.trim() || saving}>{saving ? 'Saving…' : `Post score ${s.score}`}</button>
-            </form>
-          )}
-          {saved && board?.rank && <p className="session-report__rank">You’re #{board.rank} of {board.total} on {trackName}.</p>}
-          {error && <p className="session-report__error">{error}</p>}
-          {board && board.entries.length > 0 ? (
-            <ol className="session-report__list">
-              {board.entries.map((e, i) => (
-                <li key={e.id} className={e.id === mine ? 'session-report__me' : undefined}>
-                  <span className="session-report__pos">{i + 1}</span>
-                  <span className="session-report__name">{e.name}</span>
-                  <span>{e.score}</span>
-                  <span>{e.reaction_avg_s === null ? '—' : `${e.reaction_avg_s.toFixed(2)} s`}</span>
-                  <span>{lap(e.best_lap_s)}</span>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            board && <p className="session-report__empty">No scores yet: be the first.</p>
-          )}
-        </section>
 
         <footer className="session-report__actions">
           <button

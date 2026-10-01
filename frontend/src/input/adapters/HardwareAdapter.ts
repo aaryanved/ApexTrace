@@ -19,8 +19,7 @@ export interface HardwareInputMessage {
 
 export const BRIDGE_PORT = 8765
 
-// Same host the page was served from, so the engineer's second device doesn't
-// look for the bridge on its own localhost (mirrors api/config.ts). Set
+// The bridge runs on the machine serving the page (the wheel's USB host). Set
 // VITE_HARDWARE_WS_URL when the ESP32 is plugged into a different machine.
 // Resolved lazily: read at module load this would make the module unimportable
 // outside a browser.
@@ -167,7 +166,15 @@ export function createHardwareAdapter(onAvailabilityChange?: () => void): InputA
 
   function connect() {
     if (disposed) return
-    const ws = new WebSocket(bridgeUrl())
+    let ws: WebSocket
+    try {
+      ws = new WebSocket(bridgeUrl())
+    } catch {
+      // An HTTPS page (the hosted build) may not open the bridge's ws:// URL;
+      // the constructor throws instead of failing the socket. No wheel there,
+      // and retrying would throw again, so stay unavailable.
+      return
+    }
     socket = ws
 
     ws.onopen = () => {

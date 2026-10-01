@@ -3,7 +3,6 @@ import { formatLapTime } from '../scene/trackGeometry'
 import type { VehicleStateMessage } from '../types/schemas'
 import './RunStateBanner.css'
 
-const STALE_THRESHOLD_MS = 500
 const FLASH_MS = 3000
 
 interface Flash {
@@ -12,7 +11,7 @@ interface Flash {
 }
 
 // Transient race-control style messages: off track, lap completed (with the
-// lap time), sector transitions, stale telemetry.
+// lap time), sector transitions.
 export function RunStateBanner({ vehicleState }: { vehicleState: VehicleStateMessage | null }) {
   const [flash, setFlash] = useState<Flash | null>(null)
   const prevSector = useRef<number | null>(null)
@@ -78,13 +77,6 @@ export function RunStateBanner({ vehicleState }: { vehicleState: VehicleStateMes
     return (
       <div className={`race-msg ${flash.kind === 'lap' ? 'race-msg--lap' : 'race-msg--info'}`} role="status">
         {flash.kind === 'lap' ? <span aria-hidden="true">■</span> : null} {flash.text}
-      </div>
-    )
-  }
-  if (vehicleState.packet_age_ms > STALE_THRESHOLD_MS) {
-    return (
-      <div className="race-msg race-msg--warn" role="status">
-        <span aria-hidden="true">▲</span> Stale telemetry ({Math.round(vehicleState.packet_age_ms)} ms)
       </div>
     )
   }

@@ -1,30 +1,23 @@
 # ApexTrace: setup, controls and tests
 
-A motorsport safety-testing prototype. A driver drives full laps of
-Monza or Baku (real layouts, simplified, low-poly 3D), an engineer injects bounded faults into
-a corner-entry **BRAKE warning system** from a second device, and a budget
-screen helps a fictional small team decide which upgrade to fund — by
-re-running the same fixed test suite and checking what the season budget can
-afford.
+A 2026-spec F1 driving simulator with an on-board BRAKE warning system:
+drive full laps of Monza or Baku (real layouts, simplified 3D), and a safety
+report scores how you reacted to every warning. Everything runs in the
+browser; see [ARCHITECTURE.md](../ARCHITECTURE.md) for the design.
 
-This is an F1-*inspired* prototype: a toy vehicle model with a scripted
-driver, **not** F1 physics, not certification, and no real team economics.
-See [docs/DEMO.md](DEMO.md) for the demo script, launch checklist and
-the honest limits of the evidence, and [ARCHITECTURE.md](../ARCHITECTURE.md) for
-the design.
+This is an F1-*inspired* prototype: a simplified vehicle model, **not** team
+data or certification.
 
 ## Requirements
 
 - Node.js 20+ and npm
-- Python **3.11** or 3.12 (3.14 has no prebuilt `pydantic-core` wheels yet)
-- Google Chrome (only for the optional browser end-to-end test)
+- Google Chrome (only for the browser end-to-end test)
+- Python 3 with `pyserial` and `websockets` (only for the ESP32 wheel bridge)
 
 ## First-time setup
 
 ```bash
-cd backend && python3.11 -m venv venv && source venv/bin/activate \
-  && pip install -r requirements.txt && cd ..
-cd frontend && npm install && cd ..
+cd frontend && npm install
 ```
 
 **Detailed car model (optional, per machine):** the game draws
@@ -40,48 +33,15 @@ It caps textures at 1024 px (GPU texture memory ~391 MB → ~122 MB) and leaves
 the meshes and material names alone, so the wheels still spin and steer. Refresh
 the page afterwards: the game checks for the model once per page load.
 
-## Launch (driver laptop)
+## Run
 
 ```bash
-scripts/start.sh
+cd frontend && npm run dev -- --host
 ```
 
-Starts the API on `:8000` and the app on `:5173`, both reachable on the local
-network. It prints two URLs:
-
-- Driver laptop: `http://localhost:5173/#drive`
-- Engineer device (same Wi-Fi): `http://<laptop-ip>:5173/#engineer`
-
-Manual equivalents:
-
-```bash
-cd backend  && source venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8000
-cd frontend && npm run dev -- --host --port 5173
-```
-
-**Result cache:** the upgrade evaluation (~340 simulated laps) and every
-Compare replay are deterministic, so they are stored in `backend/.cache/`
-(git-ignored). The first start after a change computes the evaluation
-(~1.5 min) and then fills the replays in the background on one low-priority
-core (~5 min); later starts read them back instantly. Editing anything under
-`backend/app/`, `config/`, `scenarios/` or the TCN models invalidates it
-automatically. `rm -rf backend/.cache` clears it, `LIMITLAB_CACHE=0` turns it off.
-
-Screens are addressable by hash: `#home` (the front page: what LimitLab is,
-how a run works, which challenge track each part answers, live leaderboard),
-`#drive`, `#engineer`, `#garage`, `#compare`.
-
-**Driver safety report + leaderboard:** the Drive screen times the real
-driver's reaction to every BRAKE warning (warning shown -> brake past 30 %),
-flags warnings ignored or anticipated, and tracks the closest call, walls,
-off-tracks, best lap, top speed and peak g. A chip under the BRAKE banner
-shows each reaction as it happens; **Safety report** (and End session) opens
-the full report: a 0-100 safety score, every reaction charted against the
-0.25-0.40 s the stress suite's scripted driver assumes, and what a slower
-reaction costs in metres. Scores can be posted to a per-track leaderboard
-(`GET/POST /leaderboard`, stored in `backend/.data/leaderboard.json`,
-git-ignored; `rm` it to reset before a demo).
-Health check: `curl localhost:8000/health`.
+Open `http://localhost:5173` and press **Start session**. The camera button
+cycles cockpit, chase and overview; **Graphics: Quality / Performance** is
+remembered per machine.
 
 ## Controls
 
@@ -132,9 +92,8 @@ is broken:
 | --- | --- | --- |
 | LIVE | in a session, driving with this wheel | — |
 | NO BRIDGE | nothing from `bridge.py` for 1.5 s | start the bridge (and close the Serial Monitor) |
-| NO GAME | bridge up, no Drive screen connected | open `#drive` on the laptop |
+| NO GAME | bridge up, no Drive screen connected | open the app on the laptop |
 | NO SESSION | Drive screen open, no session | press Start |
-| CONNECTING | session (re)connecting to the backend | check the backend is running |
 | WHEEL NOT IN USE | in a session, but another input is driving | unplug the gamepad, or check the wheel's data reaches the browser |
 
 **Force feedback** (like a console pad's rumble): kerbs drum at the rate the
@@ -160,7 +119,7 @@ and change `PIN_RUMBLE_SERVO` in `rumble.cpp`. The servos stop on their own
 traction control Off/Medium/Full, ABS On/Off, automatic or manual
 transmission, DRS Off/Auto/Manual, and battery power Harvest/Balanced/Overtake.
 
-**Car model** (`backend/app/f1_car.py`): a simplified 2026-regulation car -
+**Car model** (`frontend/src/sim/car.ts`): a simplified 2026-regulation car -
 tyre slip and a friction circle (so braking or wheelspin costs cornering
 grip), downforce and drag that grow with speed plus Z/X-mode active aero, a
 400 kW engine through an 8-speed gearbox and a 350 kW MGU-K that fades above
@@ -169,102 +128,41 @@ grip), downforce and drag that grow with speed plus Z/X-mode active aero, a
 data. Laps are timed against track limits (void once the whole car is past
 the edge line) and the dash keeps the session's best valid lap.
 
+**Driver safety report:** the Drive screen times your reaction to every BRAKE
+warning (warning shown -> brake past 30 %), flags warnings ignored or
+anticipated, and tracks the closest call, walls, off-tracks, best lap, top
+speed and peak g. A chip under the BRAKE banner shows each reaction as it
+happens; **Safety report** (and End session) opens the full report with a
+0-100 safety score, every reaction charted, and a CSV download of the data.
+
 ## Tests
 
 ```bash
-cd backend  && source venv/bin/activate && python -m pytest
-cd frontend && npm test
-cd frontend && npm run e2e                                       # 23 real-Chrome checks (25 with E2E_OUTAGE=1)
-cd frontend && node e2e/barriers.mjs                             # wall impacts + live TCN on both tracks
+cd frontend && npm test          # unit tests, including the simulator against recorded Python sessions
+cd frontend && npm run build && npx vite preview --port 4173
+cd frontend && npm run e2e       # real Chrome: real-time simulation and wall impacts on both tracks
 ```
 
-`npm run e2e` needs the app running (`scripts/start.sh`) and Chrome installed.
-`E2E_OUTAGE=1 npm run e2e` additionally kills and restarts the backend to check
-outage recovery. Screenshots land in `frontend/e2e/shots/` (git-ignored).
+`src/sim/*.test.ts` replay steps and whole sessions recorded from the original
+Python simulator (`src/sim/__fixtures__`, exported by
+`backend/scripts/export_sim_fixtures.py` before the backend was retired; see
+git history) and require every tick to match. `npm run e2e` needs Chrome;
+`BASE=https://…` points it at a deployed build. Screenshots land in
+`frontend/e2e/shots/` (git-ignored).
 
-## Production build (the frozen demo build)
+## Deploy
 
-```bash
-cd frontend && npm run build && npm run preview -- --host --port 4173
-# e2e against it:  BASE=http://localhost:4173 npm run e2e
-```
+`npm run build` produces a static site in `frontend/dist`; it needs no server.
+The live one is a Vercel project rooted at `frontend/`.
 
 ## Layout
 
 ```
-frontend/   React + TypeScript + React Three Fiber (Drive, Engineer, Garage, Compare, demo mode)
-backend/    FastAPI: sessions + WebSockets, faults, scenarios, upgrades, evaluation
-            + app/sim (lap simulator), app/ai (TCN lap forecaster, SAC/TPE/random scenario search)
-config/     upgrades.json — upgrade prices/effects and default budget (editable assumptions)
-scenarios/  saved stress scenarios (*.json); scenarios/presets/ = lap-simulator presets
-scripts/    start.sh, record_backup_replay.py
-docs/       DEMO.md
-```
-
-## Simulator and AI status
-
-`backend/app/placeholder_sim.py` still contains the simplified vehicle model,
-pending integration with Person A's simulator. `backend/app/stress/` owns
-the shared fault pipeline and evaluation. Solid barriers use swept collision
-checks against the rendered wall geometry and the whole 5.6 × 2 m car.
-Impact stops the car and records a failed run; use Reset to restart after a
-head-on crash. This is a contact constraint, not a realistic damage model.
-
-The optional TCN observer loads three trained checkpoints and `meta.json`
-from `backend/models/tcn/`. It predicts one-second exit risk and clearance
-from 2.5 seconds of observed telemetry, in both live sessions and replays;
-it does not control braking warnings. Missing models or ML dependencies
-are shown as unavailable. SAC artifacts and its random-search comparison
-are in `backend/models/sac/`.
-
-```bash
-cd backend
-venv/bin/pip install -r requirements-ml.txt
-venv/bin/python -m app.ml.dataset        # regenerate training data if needed
-venv/bin/python -m app.ml.train_tcn      # train and evaluate the ensemble
-venv/bin/python -m app.ml.evaluate_tcn   # recheck saved models after simulator changes
-```
-
-The saved training/test results use the original dataset; the held-out
-stress suite is reevaluated after the solid-barrier fix. Simulator hashes
-and this distinction are recorded in the model metadata. Clearance error
-must be compared with its baseline separately from exit classification.
-
-## Lap simulator and AI scenario search (Person A)
-
-A separate deterministic lap simulator lives in `backend/app/sim/` with its
-AI layer in `backend/app/ai/`. It runs one flying lap of simplified closed
-Monza (~4.4 km, 11 corners) and Baku (~4.3 km, 13 corners) layouts with a
-scripted driver, a corner-entry warning system and seeded faults (grip
-mismatch, telemetry delay, sensor noise, burst packet loss, brake
-degradation, reaction delay). The same scenario and seed always give the same
-lap. It is served under `/simulation/*`, `/scenario/*`,
-`/configuration/*`, `/ai/status` and `/ws/simulation`; interactive docs at
-`http://localhost:8000/docs`. The AI routes need `requirements-ml.txt` and
-are skipped if torch/optuna are missing. Presets are in `scenarios/presets/`;
-design notes are in [ARCHITECTURE.md](../ARCHITECTURE.md), and progress/decisions
-in [docs/person-a-progress.md](person-a-progress.md).
-
-Trained artifacts are committed (`backend/models/tcn/model.pt` +
-`config.json`, `backend/models/sac/sac.pt`, `backend/models/experiment.json`),
-next to the TCN observer / SAC artifacts above. To regenerate (from `backend/`,
-venv active, ML requirements installed):
-
-```bash
-python scripts/demo.py   # baseline vs upgrades on presets, replays, AI search -> simulator
-
-# simulator-labelled data and a held-out set (5000 laps take ~4 min on 8 cores)
-python scripts/generate_data.py --num-runs 5000 --seed 42 --output data/training.json
-python scripts/generate_data.py --num-runs 1500 --seed 7  --output data/test.json
-python scripts/train_tcn.py --data data/training.json --output models/tcn
-python scripts/evaluate_tcn.py --model models/tcn --data data/test.json
-python scripts/train_sac.py --steps 3072 --output models/sac
-python scripts/run_experiment.py --budget 50 --seeds 0 1 2 3 4 --output models/experiment.json
-```
-
-Quick API example:
-
-```bash
-curl -s -X POST localhost:8000/simulation/run -H 'content-type: application/json' \
-  -d '{"scenario": {"track": "monza", "entry_speed": 85, "brake_effectiveness": 0.5, "warning_margin": 0, "driver_reaction_delay": 0.5}, "configuration": "baseline"}'
+frontend/src/sim/     the simulator: car.ts (dynamics), vehicle.ts (track, laps, surfaces),
+                      barriers.ts, pipeline.ts (sensors -> warning computer -> display),
+                      session.ts (one 20 Hz session), worker.ts (runs it off the main thread),
+                      tracks/ (circuit geometry)
+frontend/src/         the Drive screen: 3D scene, HUD, inputs, audio, haptics, safety report
+embedded-firmware/    ESP32 wheel firmware and the serial-to-WebSocket bridge
+scripts/              optimize_car_model.py (for the optional detailed car model)
 ```
